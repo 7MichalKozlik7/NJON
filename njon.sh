@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+# NIE UŻYWAMY set -e NA POCZĄTKU BO PRZERYWA SKRYPT!
 
 # Wersja
 VERSION="1.0.0"
@@ -43,9 +43,6 @@ cleanup() {
     trap - SIGINT SIGTERM EXIT
     exit $exit_code
 }
-
-# Ustaw trap na sygnały (tylko podczas instalacji)
-# Trap zostanie ustawiony później podczas faktycznej instalacji
 
 # Sprawdź czy nie uruchomiono jako root
 if [[ $EUID -eq 0 ]]; then
@@ -171,8 +168,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 for i in $(seq 1 16); do
   printf "[%2d] Sprawdzam: %-40s" "$i" "${PART_NAMES[$i]}" | tee -a $DETECT_LOG
   
-  # Bezpieczne wykonanie testu
-  set +e  # Tymczasowo wyłącz exit on error
+  # Wykonaj test BEZ set -e
   if eval "${DETECT_CMDS[$i]}" 2>/dev/null; then
     state="success"
     echo " ✅" | tee -a $DETECT_LOG
@@ -180,7 +176,6 @@ for i in $(seq 1 16); do
     state="missing"
     echo " ❌" | tee -a $DETECT_LOG
   fi
-  set -e  # Przywróć exit on error
   
   # Aktualizacja stanu
   sed -i "/^PART_${i}=.*$/d" "${STATE_FILE}" 2>/dev/null || true
@@ -188,6 +183,7 @@ for i in $(seq 1 16); do
 done
 
 # Zapisz timestamp ostatniej aktualizacji
+sed -i "/^LAST_UPDATE=/d" "${STATE_FILE}" 2>/dev/null || true
 echo "LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')" >> "${STATE_FILE}"
 
 echo
@@ -196,7 +192,7 @@ echo "║         📊 Status wykrytych komponentów        ║"
 echo "╚════════════════════════════════════════════════╝"
 echo
 
-for i in $(seq 1 15); do
+for i in $(seq 1 16); do
   state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
   status_icon="❌" 
   [ "$state" == "success" ] && status_icon="✅"
@@ -214,15 +210,17 @@ echo
 # Lista brakujących komponentów
 INSTALL_LIST=""
 MISSING_COUNT=0
-for i in $(seq 1 15); do
-  state=$(grep "^PART_${i}=" "${STATE_FILE}" | cut -d'=' -f2)
-  if [[ "$state" == "missing" ]]; then
+for i in $(seq 1 16); do
+  state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
+  if [[ "$state" == "missing" ]] || [[ -z "$state" ]]; then
     INSTALL_LIST="$INSTALL_LIST $i"
     ((MISSING_COUNT++))
   fi
 done
 
+# GŁÓWNA LOGIKA - ZAWSZE CZEKAJ NA INPUT
 if [[ -z $INSTALL_LIST ]]; then
+  # Wszystko zainstalowane
   echo "🎉 Wszystkie składniki wykryte jako zainstalowane!"
   echo
   echo "💡 Co chcesz zrobić?"
@@ -231,226 +229,266 @@ if [[ -z $INSTALL_LIST ]]; then
   echo "   3. Wymuś reinstalację komponentu"
   echo "   q. Wyjdź"
   echo
-  read -p "👉 Wybór: " ACTION
   
-  case $ACTION in
-    1)
-      echo "🚀 Uruchamiam test..."
-      python3 ~/test_installation.py || echo "❌ Błąd testu. Sprawdź czy plik istnieje: ~/test_installation.py"
-      ;;
-    2)
-      echo
-      echo "📊 Status wszystkich komponentów:"
-      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      for i in $(seq 1 16); do
-        state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
-        status_icon="❌" 
-        [ "$state" == "success" ] && status_icon="✅"
-        printf "[%2d] %s %-45s\n" "$i" "$status_icon" "${PART_NAMES[$i]}"
-      done
-      ;;
-    3)
-      echo
-      echo "🔧 Który komponent chcesz przeinstalować? (1-16)"
-      read -p "👉 Numer: " REINSTALL_NUM
-      if [[ "$REINSTALL_NUM" =~ ^[0-9]+$ ]] && (( REINSTALL_NUM >= 1 && REINSTALL_NUM <= 16 )); then
-        sed -i "/^PART_${REINSTALL_NUM}=/d" "${STATE_FILE}"
-        echo "PART_${REINSTALL_NUM}=missing" >> "${STATE_FILE}"
-        echo "✅ Oznaczono komponent [$REINSTALL_NUM] do reinstalacji"
-        echo "🔄 Uruchom skrypt ponownie aby zainstalować"
-      else
-        echo "❌ Nieprawidłowy numer"
-      fi
-      ;;
-    q|Q)
+  while true; do
+    read -p "👉 Wybór: " ACTION
+    
+    case $ACTION in
+      1)
+        echo "🚀 Uruchamiam test..."
+        python3 ~/test_installation.py || echo "❌ Błąd testu. Sprawdź czy plik istnieje: ~/test_installation.py"
+        break
+        ;;
+      2)
+        echo
+        echo "📊 Status wszystkich komponentów:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        for i in $(seq 1 16); do
+          state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
+          status_icon="❌" 
+          [ "$state" == "success" ] && status_icon="✅"
+          printf "[%2d] %s %-45s\n" "$i" "$status_icon" "${PART_NAMES[$i]}"
+        done
+        echo
+        echo "Naciśnij Enter aby kontynuować..."
+        read
+        exec "$0"
+        ;;
+      3)
+        echo
+        echo "🔧 Który komponent chcesz przeinstalować? (1-16)"
+        read -p "👉 Numer: " REINSTALL_NUM
+        if [[ "$REINSTALL_NUM" =~ ^[0-9]+$ ]] && (( REINSTALL_NUM >= 1 && REINSTALL_NUM <= 16 )); then
+          sed -i "/^PART_${REINSTALL_NUM}=/d" "${STATE_FILE}"
+          echo "PART_${REINSTALL_NUM}=missing" >> "${STATE_FILE}"
+          echo "✅ Oznaczono komponent [$REINSTALL_NUM] do reinstalacji"
+          echo "🔄 Uruchamiam ponownie..."
+          sleep 2
+          exec "$0"
+        else
+          echo "❌ Nieprawidłowy numer"
+          continue
+        fi
+        ;;
+      q|Q)
+        echo "👋 Do zobaczenia!"
+        exit 0
+        ;;
+      "")
+        echo "❌ Nic nie wybrano! Spróbuj ponownie."
+        continue
+        ;;
+      *)
+        echo "❌ Nieprawidłowy wybór: $ACTION"
+        continue
+        ;;
+    esac
+  done
+else
+  # Są komponenty do zainstalowania
+  echo "📋 Brakujące komponenty ($MISSING_COUNT):"
+  echo "   Numery:$INSTALL_LIST"
+  echo
+  echo "🔧 Opcje instalacji:"
+  echo "   • Wpisz numery oddzielone spacją (np. 1 2 3)"
+  echo "   • Wpisz 'all' aby zainstalować wszystkie brakujące"
+  echo "   • Wpisz 'q' aby wyjść"
+  echo
+
+  # Pętla do czasu otrzymania poprawnego inputu
+  while true; do
+    read -p "👉 Wybór: " PART_SELECTION
+    
+    # Sprawdzenie czy coś wybrano
+    if [[ -z "$PART_SELECTION" ]]; then
+      echo "❌ Nic nie wybrano! Spróbuj ponownie."
+      echo "💡 Wskazówka: wpisz numery (np. 1 2 3), 'all' lub 'q'"
+      continue
+    fi
+    
+    # Obsługa wyjścia
+    if [[ "$PART_SELECTION" == "q" || "$PART_SELECTION" == "Q" ]]; then
       echo "👋 Do zobaczenia!"
-      ;;
-    *)
-      echo "❌ Nieprawidłowy wybór"
-      ;;
-  esac
-  exit 0
-fi
-
-echo "📋 Brakujące komponenty ($MISSING_COUNT):"
-echo "   Numery:$INSTALL_LIST"
-echo
-echo "🔧 Opcje instalacji:"
-echo "   • Wpisz numery oddzielone spacją (np. 1 2 3)"
-echo "   • Wpisz 'all' aby zainstalować wszystkie brakujące"
-echo "   • Wpisz 'q' aby wyjść"
-echo
-
-# Pętla do czasu otrzymania poprawnego inputu
-while true; do
-  read -p "👉 Wybór: " PART_SELECTION
-  
-  # Sprawdzenie czy coś wybrano
-  if [[ -z "$PART_SELECTION" ]]; then
-    echo "❌ Nic nie wybrano! Spróbuj ponownie."
-    continue
-  fi
-  
-  # Obsługa wyjścia
-  if [[ "$PART_SELECTION" == "q" || "$PART_SELECTION" == "Q" ]]; then
-    echo "👋 Do zobaczenia!"
-    exit 0
-  fi
-  
-  # Obsługa 'all'
-  if [[ "$PART_SELECTION" == "all" || "$PART_SELECTION" == "ALL" ]]; then
-    PART_SELECTION=$INSTALL_LIST
-    break
-  fi
-  
-  # Walidacja numerów
-  VALID=true
-  for num in $PART_SELECTION; do
-    if ! [[ "$num" =~ ^[0-9]+$ ]] || (( num < 1 || num > 16 )); then
-      echo "❌ Błędny numer: $num (dozwolone 1-16)"
-      VALID=false
+      exit 0
+    fi
+    
+    # Obsługa 'all'
+    if [[ "$PART_SELECTION" == "all" || "$PART_SELECTION" == "ALL" ]]; then
+      PART_SELECTION=$INSTALL_LIST
       break
     fi
+    
+    # Walidacja numerów
+    VALID=true
+    for num in $PART_SELECTION; do
+      if ! [[ "$num" =~ ^[0-9]+$ ]] || (( num < 1 || num > 16 )); then
+        echo "❌ Błędny numer: $num (dozwolone 1-16)"
+        VALID=false
+        break
+      fi
+    done
+    
+    if [[ "$VALID" == "true" ]]; then
+      break
+    else
+      echo "Spróbuj ponownie..."
+    fi
   done
-  
-  if [[ "$VALID" == "true" ]]; then
-    break
+
+  # Ostrzeżenia przed instalacją
+  if [[ "$PART_SELECTION" =~ 5 ]]; then
+    echo
+    echo "⚠️  UWAGA: OpenCV będzie kompilowany około 3 godzin!"
+    read -p "Kontynuować? [Y/n]: " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Nn]$ ]] && exec "$0"
+  fi
+
+  if [[ "$PART_SELECTION" =~ 15 ]]; then
+    echo
+    echo "⚠️  UWAGA: Migracja na SSD wymaga podłączonego dysku NVMe!"
+    echo "   Zostanie użyte urządzenie /dev/nvme0n1"
+    read -p "Kontynuować? [Y/n]: " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Nn]$ ]] && exec "$0"
+  fi
+
+  # Instalacja
+  echo
+  echo "🚀 Rozpoczynam instalację wybranych komponentów..."
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # Ustaw trap tylko na czas instalacji
+  trap cleanup SIGINT SIGTERM
+
+  # Teraz włącz set -e tylko dla instalacji
+  set -e
+
+  START_TIME=$(date +%s)
+  INSTALLED_COUNT=0
+  SKIPPED_COUNT=0
+
+  for i in $PART_SELECTION; do
+    SCRIPT=$(find "${PARTS_DIR}/" -maxdepth 1 -type f -name "part${i}_*.sh" | head -n1)
+    if [[ -z $SCRIPT ]]; then
+      echo "⚠️  Skrypt part${i}_*.sh nie znaleziony w ${PARTS_DIR}!"
+      echo "   Sprawdź czy plik istnieje i ma poprawną nazwę"
+      continue
+    fi
+    
+    # Sprawdź czy skrypt jest wykonywalny
+    if [[ ! -x "$SCRIPT" ]]; then
+      echo "🔧 Nadaję uprawnienia wykonywania dla $SCRIPT"
+      chmod +x "$SCRIPT"
+    fi
+    
+    state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
+    if [[ "$state" == "success" ]]; then
+      echo "➡️  [$i] ${PART_NAMES[$i]} już zainstalowane – pomijam."
+      ((SKIPPED_COUNT++))
+      continue
+    fi
+    
+    echo
+    echo "┌────────────────────────────────────────────"
+    echo "│ 🔧 [$i] Instaluję: ${PART_NAMES[$i]}"
+    echo "└────────────────────────────────────────────"
+    
+    PART_START=$(date +%s)
+    
+    if bash "$SCRIPT" 2>&1 | tee -a "${LOG_FILE}"; then
+      sed -i "/^PART_${i}=/d" "${STATE_FILE}"
+      echo "PART_${i}=success" >> "${STATE_FILE}"
+      # Aktualizuj timestamp
+      sed -i "/^LAST_UPDATE=/d" "${STATE_FILE}" 2>/dev/null || true
+      echo "LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')" >> "${STATE_FILE}"
+      PART_END=$(date +%s)
+      PART_TIME=$((PART_END - PART_START))
+      echo "✅ [$i] Zakończono w $(date -d@$PART_TIME -u +%H:%M:%S)"
+      ((INSTALLED_COUNT++))
+    else
+      echo "❌ [$i] Błąd instalacji! Sprawdź log: ${LOG_FILE}"
+      exit 1
+    fi
+  done
+
+  END_TIME=$(date +%s)
+  TOTAL_TIME=$((END_TIME - START_TIME))
+
+  # Wyłącz set -e po instalacji
+  set +e
+
+  # Usuń trap po zakończeniu instalacji
+  trap - SIGINT SIGTERM
+
+  echo
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  if [[ $INSTALLED_COUNT -eq 0 ]]; then
+    echo "ℹ️  Nie zainstalowano żadnych nowych komponentów."
+    if [[ $SKIPPED_COUNT -gt 0 ]]; then
+      echo "   Pominiętych (już zainstalowanych): $SKIPPED_COUNT"
+    fi
   else
-    echo "Spróbuj ponownie..."
+    echo "✅ Instalacja zakończona!"
+    echo "   Zainstalowanych komponentów: $INSTALLED_COUNT"
+    if [[ $SKIPPED_COUNT -gt 0 ]]; then
+      echo "   Pominiętych (już zainstalowanych): $SKIPPED_COUNT"
+    fi
+    echo "⏱️  Całkowity czas: $(date -d@$TOTAL_TIME -u +%H:%M:%S)"
+    echo "📝 Log instalacji: ${LOG_FILE}"
+    echo
+    echo "💡 Następne kroki:"
+    echo "   1. source ~/.bashrc (lub zrestartuj terminal)"
+    echo "   2. python3 ~/test_installation.py (test środowiska)"
+    echo "   3. sudo reboot (zalecane po instalacji)"
   fi
-done
 
-# Ostrzeżenia przed instalacją
-if [[ "$PART_SELECTION" =~ 5 ]]; then
   echo
-  echo "⚠️  UWAGA: OpenCV będzie kompilowany około 3 godzin!"
-  read -p "Kontynuować? [Y/n]: " -n 1 -r
+  echo "🔍 Co chcesz teraz zrobić?"
+  echo "   1. Uruchom test środowiska"
+  echo "   2. Zobacz ostatnie linie logu"
+  echo "   3. Uruchom njon.sh ponownie"
+  echo "   q. Zakończ"
   echo
-  [[ $REPLY =~ ^[Nn]$ ]] && exit 0
-fi
-
-if [[ "$PART_SELECTION" =~ 15 ]]; then
-  echo
-  echo "⚠️  UWAGA: Migracja na SSD wymaga podłączonego dysku NVMe!"
-  echo "   Zostanie użyte urządzenie /dev/nvme0n1"
-  read -p "Kontynuować? [Y/n]: " -n 1 -r
-  echo
-  [[ $REPLY =~ ^[Nn]$ ]] && exit 0
-fi
-
-# Instalacja
-echo
-echo "🚀 Rozpoczynam instalację wybranych komponentów..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-# Ustaw trap tylko na czas instalacji
-trap cleanup SIGINT SIGTERM
-
-START_TIME=$(date +%s)
-INSTALLED_COUNT=0
-SKIPPED_COUNT=0
-
-for i in $PART_SELECTION; do
-  SCRIPT=$(find "${PARTS_DIR}/" -maxdepth 1 -type f -name "part${i}_*.sh" | head -n1)
-  if [[ -z $SCRIPT ]]; then
-    echo "⚠️  Skrypt part${i}_*.sh nie znaleziony w ${PARTS_DIR}!"
-    echo "   Sprawdź czy plik istnieje i ma poprawną nazwę"
-    continue
-  fi
   
-  # Sprawdź czy skrypt jest wykonywalny
-  if [[ ! -x "$SCRIPT" ]]; then
-    echo "🔧 Nadaję uprawnienia wykonywania dla $SCRIPT"
-    chmod +x "$SCRIPT"
-  fi
-  
-  state=$(grep "^PART_${i}=" "${STATE_FILE}" | cut -d'=' -f2)
-  if [[ "$state" == "success" ]]; then
-    echo "➡️  [$i] ${PART_NAMES[$i]} już zainstalowane – pomijam."
-    ((SKIPPED_COUNT++))
-    continue
-  fi
-  
-  echo
-  echo "┌────────────────────────────────────────────"
-  echo "│ 🔧 [$i] Instaluję: ${PART_NAMES[$i]}"
-  echo "└────────────────────────────────────────────"
-  
-  PART_START=$(date +%s)
-  
-  if bash "$SCRIPT" 2>&1 | tee -a "${LOG_FILE}"; then
-    sed -i "/^PART_${i}=/d" "${STATE_FILE}"
-    echo "PART_${i}=success" >> "${STATE_FILE}"
-    # Aktualizuj timestamp
-    sed -i "/^LAST_UPDATE=/d" "${STATE_FILE}" 2>/dev/null || true
-    echo "LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')" >> "${STATE_FILE}"
-    PART_END=$(date +%s)
-    PART_TIME=$((PART_END - PART_START))
-    echo "✅ [$i] Zakończono w $(date -d@$PART_TIME -u +%H:%M:%S)"
-    ((INSTALLED_COUNT++))
-  else
-    echo "❌ [$i] Błąd instalacji! Sprawdź log: ${LOG_FILE}"
-    exit 1
-  fi
-done
+  while true; do
+    read -p "👉 Wybór: " POST_ACTION
 
-END_TIME=$(date +%s)
-TOTAL_TIME=$((END_TIME - START_TIME))
-
-# Usuń trap po zakończeniu instalacji
-trap - SIGINT SIGTERM
-
-echo
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-if [[ $INSTALLED_COUNT -eq 0 ]]; then
-  echo "ℹ️  Nie zainstalowano żadnych nowych komponentów."
-  if [[ $SKIPPED_COUNT -gt 0 ]]; then
-    echo "   Pominiętych (już zainstalowanych): $SKIPPED_COUNT"
-  fi
-else
-  echo "✅ Instalacja zakończona!"
-  echo "   Zainstalowanych komponentów: $INSTALLED_COUNT"
-  if [[ $SKIPPED_COUNT -gt 0 ]]; then
-    echo "   Pominiętych (już zainstalowanych): $SKIPPED_COUNT"
-  fi
-  echo "⏱️  Całkowity czas: $(date -d@$TOTAL_TIME -u +%H:%M:%S)"
-  echo "📝 Log instalacji: ${LOG_FILE}"
-  echo
-  echo "💡 Następne kroki:"
-  echo "   1. source ~/.bashrc (lub zrestartuj terminal)"
-  echo "   2. python3 ~/test_installation.py (test środowiska)"
-  echo "   3. sudo reboot (zalecane po instalacji)"
+    case $POST_ACTION in
+      1)
+        echo "🚀 Uruchamiam test..."
+        python3 ~/test_installation.py || echo "❌ Błąd testu"
+        break
+        ;;
+      2)
+        echo "📜 Ostatnie 20 linii logu:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        tail -n 20 "${LOG_FILE}"
+        echo
+        echo "Naciśnij Enter aby kontynuować..."
+        read
+        exec "$0"
+        ;;
+      3)
+        echo "🔄 Uruchamiam ponownie..."
+        exec "$0"
+        ;;
+      q|Q)
+        echo "👋 Dziękuję za użycie NJON!"
+        exit 0
+        ;;
+      "")
+        echo "❌ Nic nie wybrano! Spróbuj ponownie."
+        continue
+        ;;
+      *)
+        echo "❌ Nieprawidłowy wybór: $POST_ACTION"
+        continue
+        ;;
+    esac
+  done
 fi
 
 echo
-echo "🔍 Co chcesz teraz zrobić?"
-echo "   1. Uruchom test środowiska"
-echo "   2. Zobacz ostatnie linie logu"
-echo "   3. Uruchom njon.sh ponownie"
-echo "   q. Zakończ"
-echo
-read -p "👉 Wybór: " POST_ACTION
-
-case $POST_ACTION in
-  1)
-    echo "🚀 Uruchamiam test..."
-    python3 ~/test_installation.py || echo "❌ Błąd testu"
-    ;;
-  2)
-    echo "📜 Ostatnie 20 linii logu:"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    tail -n 20 "${LOG_FILE}"
-    ;;
-  3)
-    echo "🔄 Uruchamiam ponownie..."
-    exec "$0"
-    ;;
-  q|Q|"")
-    echo "👋 Dziękuję za użycie NJON!"
-    ;;
-  *)
-    echo "❌ Nieprawidłowy wybór"
-    ;;
-esac
-echo
+echo "👋 Dziękuję za użycie NJON!"
