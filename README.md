@@ -35,7 +35,7 @@ NJON instaluje i konfiguruje następujące komponenty:
 
 ### 1. Klonowanie repozytorium
 ```bash
-git clone https://github.com/7MichalKozik7/njon.git
+git clone https://github.com/7MichalKozlik7/njon.git
 cd njon
 ```
 
