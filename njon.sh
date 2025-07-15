@@ -2,6 +2,61 @@
 
 set -e
 
+# Wersja
+VERSION="1.0.0"
+
+# Sprawdź opcje linii poleceń
+VERBOSE=false
+if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+  echo "NJON - Jetson Orin AI/ML Installer v$VERSION"
+  echo
+  echo "Użycie: $0 [opcje]"
+  echo
+  echo "Opcje:"
+  echo "  -h, --help     Wyświetl tę pomoc"
+  echo "  -v, --verbose  Tryb szczegółowy (debug)"
+  echo "  -V, --version  Wyświetl wersję"
+  echo
+  echo "Przykłady:"
+  echo "  $0             # Uruchom instalator"
+  echo "  $0 -v          # Uruchom w trybie debug"
+  exit 0
+elif [[ "$1" == "-V" ]] || [[ "$1" == "--version" ]]; then
+  echo "NJON v$VERSION"
+  exit 0
+elif [[ "$1" == "-v" ]] || [[ "$1" == "--verbose" ]]; then
+  VERBOSE=true
+  set -x  # Włącz debug mode
+fi
+
+# Funkcja czyszczenia przy wyjściu
+cleanup() {
+    local exit_code=$?
+    echo
+    echo -e "\033[91m🛑 Instalacja przerwana!\033[0m"
+    if [[ $exit_code -ne 0 ]]; then
+        echo -e "\033[91m❌ Kod błędu: $exit_code\033[0m"
+    fi
+    echo "📝 Log częściowej instalacji: ${LOG_FILE}"
+    
+    # Usuń trap aby uniknąć rekurencji
+    trap - SIGINT SIGTERM EXIT
+    exit $exit_code
+}
+
+# Ustaw trap na sygnały (tylko podczas instalacji)
+# Trap zostanie ustawiony później podczas faktycznej instalacji
+
+# Sprawdź czy nie uruchomiono jako root
+if [[ $EUID -eq 0 ]]; then
+   echo "⚠️  Uwaga: Skrypt uruchomiony jako root (sudo)"
+   echo "   Niektóre komponenty mogą wymagać instalacji jako zwykły użytkownik."
+   echo "   Zalecane jest uruchomienie bez sudo: ./njon.sh"
+   read -p "   Kontynuować mimo to? [y/N]: " -n 1 -r
+   echo
+   [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+fi
+
 BASE_DIR="$(cd "$(dirname "$0")"; pwd)"
 PARTS_DIR="${BASE_DIR}/parts"
 STATE_FILE="${BASE_DIR}/njon_state"
@@ -11,6 +66,21 @@ DETECT_LOG="${BASE_DIR}/njon_detect.log"
 mkdir -p "${PARTS_DIR}"
 touch "${STATE_FILE}"
 touch "${LOG_FILE}"
+
+# Sprawdzenie czy folder parts zawiera skrypty
+if [ ! -d "${PARTS_DIR}" ] || [ -z "$(ls -A ${PARTS_DIR}/part*.sh 2>/dev/null)" ]; then
+  echo "❌ BŁĄD: Brak skryptów instalacyjnych w folderze '${PARTS_DIR}'"
+  echo "   Upewnij się, że wszystkie pliki part*.sh znajdują się w folderze parts/"
+  echo
+  echo "   Oczekiwana struktura:"
+  echo "   njon/"
+  echo "   ├── njon.sh"
+  echo "   └── parts/"
+  echo "       ├── part1_swap.sh"
+  echo "       ├── part2_jetpack.sh"
+  echo "       └── ..."
+  exit 1
+fi
 
 declare -A PART_NAMES=(
   [1]="SWAP 16GB"
@@ -68,15 +138,31 @@ echo
 echo "╔════════════════════════════════════════════════╗"
 echo "║     🛠️  NJON: Instalator AI/ML dla Jetson Orin ║"
 echo "║  📦 JetPack 6.2.1 | CUDA 12.6 | Ubuntu 22.04  ║"
+echo "║                  v1.0.0                        ║"
 echo "╚════════════════════════════════════════════════╝"
 echo
 echo "📅 $(date)"
 echo "🖥️  $(uname -n) | $(uname -m)"
 echo "💾 Wolne miejsce: $(df -h / | awk 'NR==2 {print $4}')"
+echo "⏰ Uptime: $(uptime -p | sed 's/up //')"
+echo "🐍 Python: $(python3 --version 2>&1 | awk '{print $2}')"
+
+# Pokaż ostatnią aktualizację jeśli istnieje
+if [[ -f "${STATE_FILE}" ]]; then
+  LAST_UPDATE=$(grep "^LAST_UPDATE=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2-)
+  if [[ -n "$LAST_UPDATE" ]]; then
+    echo "🕒 Ostatnie sprawdzenie: $LAST_UPDATE"
+  fi
+fi
 echo
 
 # Sprawdzenie miejsca (minimum 20GB zalecane)
 check_disk_space 20
+
+# Backup poprzedniego state file jeśli istnieje
+if [[ -f "${STATE_FILE}" ]] && [[ -s "${STATE_FILE}" ]]; then
+  cp "${STATE_FILE}" "${STATE_FILE}.bak"
+fi
 
 # AUTODETEKCJA
 echo "🔍 Sprawdzam stan rzeczywisty komponentów..." | tee $DETECT_LOG
@@ -84,16 +170,25 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 for i in $(seq 1 16); do
   printf "[%2d] Sprawdzam: %-40s" "$i" "${PART_NAMES[$i]}" | tee -a $DETECT_LOG
-  if eval "${DETECT_CMDS[$i]}"; then
+  
+  # Bezpieczne wykonanie testu
+  set +e  # Tymczasowo wyłącz exit on error
+  if eval "${DETECT_CMDS[$i]}" 2>/dev/null; then
     state="success"
     echo " ✅" | tee -a $DETECT_LOG
   else
     state="missing"
     echo " ❌" | tee -a $DETECT_LOG
   fi
+  set -e  # Przywróć exit on error
+  
+  # Aktualizacja stanu
   sed -i "/^PART_${i}=.*$/d" "${STATE_FILE}" 2>/dev/null || true
   echo "PART_${i}=$state" >> "${STATE_FILE}"
 done
+
+# Zapisz timestamp ostatniej aktualizacji
+echo "LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')" >> "${STATE_FILE}"
 
 echo
 echo "╔════════════════════════════════════════════════╗"
@@ -102,7 +197,7 @@ echo "╚═══════════════════════�
 echo
 
 for i in $(seq 1 15); do
-  state=$(grep "^PART_${i}=" "${STATE_FILE}" | cut -d'=' -f2)
+  state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
   status_icon="❌" 
   [ "$state" == "success" ] && status_icon="✅"
   printf "[%2d] %s %-45s" "$i" "$status_icon" "${PART_NAMES[$i]}"
@@ -129,7 +224,51 @@ done
 
 if [[ -z $INSTALL_LIST ]]; then
   echo "🎉 Wszystkie składniki wykryte jako zainstalowane!"
-  echo "💡 Uruchom 'python3 ~/test_installation.py' aby przetestować środowisko"
+  echo
+  echo "💡 Co chcesz zrobić?"
+  echo "   1. Uruchom test środowiska"
+  echo "   2. Pokaż status wszystkich komponentów" 
+  echo "   3. Wymuś reinstalację komponentu"
+  echo "   q. Wyjdź"
+  echo
+  read -p "👉 Wybór: " ACTION
+  
+  case $ACTION in
+    1)
+      echo "🚀 Uruchamiam test..."
+      python3 ~/test_installation.py || echo "❌ Błąd testu. Sprawdź czy plik istnieje: ~/test_installation.py"
+      ;;
+    2)
+      echo
+      echo "📊 Status wszystkich komponentów:"
+      echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      for i in $(seq 1 16); do
+        state=$(grep "^PART_${i}=" "${STATE_FILE}" 2>/dev/null | cut -d'=' -f2 || echo "missing")
+        status_icon="❌" 
+        [ "$state" == "success" ] && status_icon="✅"
+        printf "[%2d] %s %-45s\n" "$i" "$status_icon" "${PART_NAMES[$i]}"
+      done
+      ;;
+    3)
+      echo
+      echo "🔧 Który komponent chcesz przeinstalować? (1-16)"
+      read -p "👉 Numer: " REINSTALL_NUM
+      if [[ "$REINSTALL_NUM" =~ ^[0-9]+$ ]] && (( REINSTALL_NUM >= 1 && REINSTALL_NUM <= 16 )); then
+        sed -i "/^PART_${REINSTALL_NUM}=/d" "${STATE_FILE}"
+        echo "PART_${REINSTALL_NUM}=missing" >> "${STATE_FILE}"
+        echo "✅ Oznaczono komponent [$REINSTALL_NUM] do reinstalacji"
+        echo "🔄 Uruchom skrypt ponownie aby zainstalować"
+      else
+        echo "❌ Nieprawidłowy numer"
+      fi
+      ;;
+    q|Q)
+      echo "👋 Do zobaczenia!"
+      ;;
+    *)
+      echo "❌ Nieprawidłowy wybór"
+      ;;
+  esac
   exit 0
 fi
 
@@ -141,21 +280,43 @@ echo "   • Wpisz numery oddzielone spacją (np. 1 2 3)"
 echo "   • Wpisz 'all' aby zainstalować wszystkie brakujące"
 echo "   • Wpisz 'q' aby wyjść"
 echo
-read -p "👉 Wybór: " PART_SELECTION
 
-# Obsługa wyboru
-if [[ "$PART_SELECTION" == "q" || "$PART_SELECTION" == "Q" ]]; then
-  echo "👋 Do zobaczenia!"
-  exit 0
-elif [[ "$PART_SELECTION" == "all" || "$PART_SELECTION" == "ALL" ]]; then
-  PART_SELECTION=$INSTALL_LIST
-fi
-
-# Walidacja numerów
-for num in $PART_SELECTION; do
-  if ! [[ "$num" =~ ^[0-9]+$ ]] || (( num < 1 || num > 16 )); then
-    echo "❌ Błędny numer: $num (dozwolone 1-16)"
-    exit 1
+# Pętla do czasu otrzymania poprawnego inputu
+while true; do
+  read -p "👉 Wybór: " PART_SELECTION
+  
+  # Sprawdzenie czy coś wybrano
+  if [[ -z "$PART_SELECTION" ]]; then
+    echo "❌ Nic nie wybrano! Spróbuj ponownie."
+    continue
+  fi
+  
+  # Obsługa wyjścia
+  if [[ "$PART_SELECTION" == "q" || "$PART_SELECTION" == "Q" ]]; then
+    echo "👋 Do zobaczenia!"
+    exit 0
+  fi
+  
+  # Obsługa 'all'
+  if [[ "$PART_SELECTION" == "all" || "$PART_SELECTION" == "ALL" ]]; then
+    PART_SELECTION=$INSTALL_LIST
+    break
+  fi
+  
+  # Walidacja numerów
+  VALID=true
+  for num in $PART_SELECTION; do
+    if ! [[ "$num" =~ ^[0-9]+$ ]] || (( num < 1 || num > 16 )); then
+      echo "❌ Błędny numer: $num (dozwolone 1-16)"
+      VALID=false
+      break
+    fi
+  done
+  
+  if [[ "$VALID" == "true" ]]; then
+    break
+  else
+    echo "Spróbuj ponownie..."
   fi
 done
 
@@ -182,18 +343,31 @@ echo
 echo "🚀 Rozpoczynam instalację wybranych komponentów..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Ustaw trap tylko na czas instalacji
+trap cleanup SIGINT SIGTERM
+
 START_TIME=$(date +%s)
+INSTALLED_COUNT=0
+SKIPPED_COUNT=0
 
 for i in $PART_SELECTION; do
   SCRIPT=$(find "${PARTS_DIR}/" -maxdepth 1 -type f -name "part${i}_*.sh" | head -n1)
   if [[ -z $SCRIPT ]]; then
-    echo "⚠️  Skrypt part${i} nie znaleziony w ${PARTS_DIR}!"
+    echo "⚠️  Skrypt part${i}_*.sh nie znaleziony w ${PARTS_DIR}!"
+    echo "   Sprawdź czy plik istnieje i ma poprawną nazwę"
     continue
+  fi
+  
+  # Sprawdź czy skrypt jest wykonywalny
+  if [[ ! -x "$SCRIPT" ]]; then
+    echo "🔧 Nadaję uprawnienia wykonywania dla $SCRIPT"
+    chmod +x "$SCRIPT"
   fi
   
   state=$(grep "^PART_${i}=" "${STATE_FILE}" | cut -d'=' -f2)
   if [[ "$state" == "success" ]]; then
     echo "➡️  [$i] ${PART_NAMES[$i]} już zainstalowane – pomijam."
+    ((SKIPPED_COUNT++))
     continue
   fi
   
@@ -207,9 +381,13 @@ for i in $PART_SELECTION; do
   if bash "$SCRIPT" 2>&1 | tee -a "${LOG_FILE}"; then
     sed -i "/^PART_${i}=/d" "${STATE_FILE}"
     echo "PART_${i}=success" >> "${STATE_FILE}"
+    # Aktualizuj timestamp
+    sed -i "/^LAST_UPDATE=/d" "${STATE_FILE}" 2>/dev/null || true
+    echo "LAST_UPDATE=$(date '+%Y-%m-%d %H:%M:%S')" >> "${STATE_FILE}"
     PART_END=$(date +%s)
     PART_TIME=$((PART_END - PART_START))
     echo "✅ [$i] Zakończono w $(date -d@$PART_TIME -u +%H:%M:%S)"
+    ((INSTALLED_COUNT++))
   else
     echo "❌ [$i] Błąd instalacji! Sprawdź log: ${LOG_FILE}"
     exit 1
@@ -219,14 +397,60 @@ done
 END_TIME=$(date +%s)
 TOTAL_TIME=$((END_TIME - START_TIME))
 
+# Usuń trap po zakończeniu instalacji
+trap - SIGINT SIGTERM
+
 echo
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "✅ Instalacja zakończona!"
-echo "⏱️  Całkowity czas: $(date -d@$TOTAL_TIME -u +%H:%M:%S)"
-echo "📝 Log instalacji: ${LOG_FILE}"
+
+if [[ $INSTALLED_COUNT -eq 0 ]]; then
+  echo "ℹ️  Nie zainstalowano żadnych nowych komponentów."
+  if [[ $SKIPPED_COUNT -gt 0 ]]; then
+    echo "   Pominiętych (już zainstalowanych): $SKIPPED_COUNT"
+  fi
+else
+  echo "✅ Instalacja zakończona!"
+  echo "   Zainstalowanych komponentów: $INSTALLED_COUNT"
+  if [[ $SKIPPED_COUNT -gt 0 ]]; then
+    echo "   Pominiętych (już zainstalowanych): $SKIPPED_COUNT"
+  fi
+  echo "⏱️  Całkowity czas: $(date -d@$TOTAL_TIME -u +%H:%M:%S)"
+  echo "📝 Log instalacji: ${LOG_FILE}"
+  echo
+  echo "💡 Następne kroki:"
+  echo "   1. source ~/.bashrc (lub zrestartuj terminal)"
+  echo "   2. python3 ~/test_installation.py (test środowiska)"
+  echo "   3. sudo reboot (zalecane po instalacji)"
+fi
+
 echo
-echo "💡 Następne kroki:"
-echo "   1. source ~/.bashrc (lub zrestartuj terminal)"
-echo "   2. python3 ~/test_installation.py (test środowiska)"
-echo "   3. sudo reboot (zalecane po instalacji)"
+echo "🔍 Co chcesz teraz zrobić?"
+echo "   1. Uruchom test środowiska"
+echo "   2. Zobacz ostatnie linie logu"
+echo "   3. Uruchom njon.sh ponownie"
+echo "   q. Zakończ"
+echo
+read -p "👉 Wybór: " POST_ACTION
+
+case $POST_ACTION in
+  1)
+    echo "🚀 Uruchamiam test..."
+    python3 ~/test_installation.py || echo "❌ Błąd testu"
+    ;;
+  2)
+    echo "📜 Ostatnie 20 linii logu:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    tail -n 20 "${LOG_FILE}"
+    ;;
+  3)
+    echo "🔄 Uruchamiam ponownie..."
+    exec "$0"
+    ;;
+  q|Q|"")
+    echo "👋 Dziękuję za użycie NJON!"
+    ;;
+  *)
+    echo "❌ Nieprawidłowy wybór"
+    ;;
+esac
 echo
