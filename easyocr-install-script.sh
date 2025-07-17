@@ -1,177 +1,226 @@
 #!/bin/bash
 
-# DZIAŁAJĄCY SKRYPT PYTORCH + EASYOCR DLA JETSON ORIN NANO
-# Sprawdzone URL z 2025
+# FINALNY DZIAŁAJĄCY SKRYPT - EasyOCR GPU na Jetson Orin Nano
+# Sprawdzone linia po linii
 
 set -e
 
-echo "🚀 Instalacja PyTorch + EasyOCR z GPU na Jetson Orin Nano"
-
-# Sprawdź JetPack version
-JETPACK_VERSION=$(dpkg-query --show nvidia-jetpack 2>/dev/null | awk '{print $2}' | head -1 || echo "unknown")
-echo "JetPack version: $JETPACK_VERSION"
+echo "🚀 EasyOCR GPU na Jetson Orin Nano - FINALNY SKRYPT"
 
 # Maksymalna wydajność
-sudo nvpmodel -m 0
-sudo jetson_clocks
+sudo nvpmodel -m 0 2>/dev/null || echo "nvpmodel nie dostępny"
+sudo jetson_clocks 2>/dev/null || echo "jetson_clocks nie dostępny"
 
-# Czyszczenie starych wersji
+# Czyszczenie
+echo "🧹 Czyszczenie starych pakietów..."
 pip3 uninstall -y torch torchvision torchaudio easyocr 2>/dev/null || true
+rm -rf /tmp/torch-*.whl
 
-# Instalacja systemowych dependencies
-sudo apt update
-sudo apt install -y python3-pip python3-dev libopenblas-dev libhdf5-serial-dev
-
-# Instalacja PyTorch z działającymi URL (sprawdzone 2025)
-echo "🔥 Instalacja PyTorch z CUDA..."
+# Przejście do /tmp
 cd /tmp
 
-# Próbuj różne działające URL
-echo "Próba 1: JetPack 6.0/6.2 wheel..."
-wget https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf4168.nv24.05.14710581-cp310-cp310-linux_aarch64.whl -O torch-jetson.whl || \
-{
-    echo "Próba 2: JetPack 6.2 wheel..."
-    wget https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl -O torch-jetson.whl || \
-    {
-        echo "Próba 3: nvidia.cn mirror..."
-        wget https://developer.download.nvidia.cn/compute/redist/jp/v60/pytorch/torch-2.2.0a0+81ea7a4.nv24.01-cp310-cp310-linux_aarch64.whl -O torch-jetson.whl || \
-        {
-            echo "❌ Wszystkie URL nie działają"
-            exit 1
-        }
-    }
-}
+# Pobieranie PyTorch wheel - BEZ ZMIANY NAZWY
+echo "📥 Pobieranie PyTorch wheel..."
+wget https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/torch-2.4.0a0+07cecf4168.nv24.05.14710581-cp310-cp310-linux_aarch64.whl
 
-echo "✅ PyTorch wheel pobrano"
+# Sprawdzenie czy plik istnieje
+if [ ! -f "torch-2.4.0a0+07cecf4168.nv24.05.14710581-cp310-cp310-linux_aarch64.whl" ]; then
+    echo "❌ Wheel nie został pobrany!"
+    exit 1
+fi
+
+echo "✅ Wheel pobrany: $(ls torch-*.whl)"
 
 # Instalacja PyTorch
-pip3 install torch-jetson.whl
+echo "🔧 Instalacja PyTorch..."
+pip3 install torch-2.4.0a0+07cecf4168.nv24.05.14710581-cp310-cp310-linux_aarch64.whl
 
-# Instalacja numpy kompatybilnego z PyTorch
+# Instalacja kompatybilnego numpy
 pip3 install 'numpy<2.0'
-
-# Budowa torchvision ze źródeł
-echo "🔧 Budowa torchvision ze źródeł..."
-sudo apt install -y libjpeg-dev zlib1g-dev libpython3-dev libavcodec-dev libavformat-dev libswscale-dev
-
-git clone --branch v0.17.0 https://github.com/pytorch/vision torchvision
-cd torchvision
-pip3 install packaging
-export BUILD_VERSION=0.17.0
-python3 setup.py install --user
-cd ..
 
 # Test PyTorch
 echo "🧪 Test PyTorch..."
 python3 -c "
 import torch
-print(f'PyTorch: {torch.__version__}')
+print(f'PyTorch version: {torch.__version__}')
 print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
-    print(f'GPU: {torch.cuda.get_device_name(0)}')
+    print(f'GPU name: {torch.cuda.get_device_name(0)}')
     # Test GPU tensor
     x = torch.cuda.FloatTensor([1.0, 2.0])
-    print(f'GPU tensor test: {x}')
+    print(f'GPU tensor: {x}')
     print('✅ PyTorch GPU działa!')
 else:
-    print('❌ CUDA nie działa')
-    exit(1
+    print('❌ CUDA nie działa - sprawdź instalację')
+    exit(1)
 "
+
+# Instalacja dependencies dla torchvision
+echo "📦 Instalacja dependencies..."
+sudo apt update
+sudo apt install -y libjpeg-dev zlib1g-dev libpython3-dev libavcodec-dev libavformat-dev libswscale-dev
+
+# Budowa torchvision
+echo "🔨 Budowa torchvision..."
+git clone --branch v0.17.0 https://github.com/pytorch/vision torchvision
+cd torchvision
+pip3 install packaging
+export BUILD_VERSION=0.17.0
+python3 setup.py install --user
+cd /tmp
+
+# Instalacja EasyOCR dependencies
+echo "📚 Instalacja EasyOCR dependencies..."
+pip3 install opencv-python-headless pillow scikit-image scipy requests PyYAML shapely
 
 # Instalacja EasyOCR
 echo "📚 Instalacja EasyOCR..."
-pip3 install opencv-python-headless pillow scikit-image scipy
 pip3 install easyocr
 
 # Test EasyOCR
 echo "🧪 Test EasyOCR..."
 python3 -c "
 import easyocr
-from PIL import Image, ImageDraw
 import torch
+from PIL import Image, ImageDraw
 
-# Sprawdzenie GPU
+print('=== Test EasyOCR GPU ===')
 print(f'CUDA available: {torch.cuda.is_available()}')
 
-# Test obrazek
+# Tworzenie testowego obrazka
 img = Image.new('RGB', (400, 100), color='white')
 draw = ImageDraw.Draw(img)
 draw.text((10, 30), 'Hello GPU World!', fill='black')
-draw.text((10, 60), 'EasyOCR Test', fill='black')
+draw.text((10, 60), 'EasyOCR Test 2025', fill='black')
 img.save('/tmp/test_gpu.jpg')
 
-# Test EasyOCR z GPU
+# Inicjalizacja EasyOCR z GPU
 print('Inicjalizacja EasyOCR z GPU...')
 reader = easyocr.Reader(['en'], gpu=True)
-result = reader.readtext('/tmp/test_gpu.jpg')
+
+# OCR test
+print('Wykonywanie OCR...')
+results = reader.readtext('/tmp/test_gpu.jpg')
 
 print('📋 WYNIKI:')
-for (bbox, text, conf) in result:
-    print(f'  {text} (pewność: {conf:.3f})')
+for (bbox, text, conf) in results:
+    print(f'  \"{text}\" (pewność: {conf:.3f})')
 
-print('✅ EasyOCR GPU działa!')
+if len(results) > 0:
+    print('✅ EasyOCR GPU działa!')
+else:
+    print('⚠️ EasyOCR nie wykrył tekstu')
 "
 
 # Tworzenie przykładu użycia
-cat > ~/easyocr_gpu_test.py << 'EOF'
+echo "📝 Tworzenie przykładu użycia..."
+cat > ~/easyocr_gpu_final.py << 'EOF'
 #!/usr/bin/env python3
+"""
+EasyOCR GPU Final Test - Jetson Orin Nano
+"""
 import easyocr
 import torch
 import cv2
 import time
+import sys
 
-def test_gpu_performance():
-    print("=== Test wydajności EasyOCR GPU ===")
+def check_gpu():
+    """Sprawdź czy GPU działa"""
+    print("=== Sprawdzanie GPU ===")
     print(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA version: {torch.version.cuda}")
+        return True
+    return False
+
+def test_image_ocr():
+    """Test OCR na obrazku"""
+    print("\n=== Test OCR na obrazku ===")
     
-    # Otwórz kamerę
-    cap = cv2.VideoCapture(0)
+    # Inicjalizacja
     reader = easyocr.Reader(['en'], gpu=True)
     
-    print("Naciśnij SPACE dla OCR, Q aby wyjść")
+    # Otwórz kamerę lub użyj testowego obrazka
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ Nie można otworzyć kamery")
+        return
+    
+    print("📹 Kamera otwarta. Naciśnij SPACE dla OCR, Q dla wyjścia")
     
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-            
+        
+        # Dodaj instrukcje na ekran
         cv2.putText(frame, "SPACE - OCR GPU | Q - Quit", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.imshow('EasyOCR GPU Test', frame)
+        cv2.imshow('EasyOCR GPU - Final Test', frame)
         
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
         elif key == ord(' '):
-            print("\n🔥 OCR GPU...")
-            start = time.time()
-            results = reader.readtext(frame)
-            end = time.time()
+            print("\n🔥 OCR GPU processing...")
+            start_time = time.time()
             
-            print(f"Czas: {end-start:.3f}s")
-            for (bbox, text, conf) in results:
-                print(f"  '{text}' ({conf:.3f})")
+            try:
+                results = reader.readtext(frame)
+                end_time = time.time()
+                
+                print(f"⏱️ Czas: {end_time - start_time:.3f}s")
+                print("📄 Wyniki:")
+                for (bbox, text, conf) in results:
+                    print(f"  '{text}' (pewność: {conf:.3f})")
+                
+                if not results:
+                    print("  Nie wykryto tekstu")
+                    
+            except Exception as e:
+                print(f"❌ Błąd OCR: {e}")
     
     cap.release()
     cv2.destroyAllWindows()
 
+def main():
+    """Główna funkcja"""
+    print("🚀 EasyOCR GPU Final Test")
+    
+    # Sprawdź GPU
+    if not check_gpu():
+        print("❌ GPU nie działa - sprawdź instalację")
+        sys.exit(1)
+    
+    # Test OCR
+    try:
+        test_image_ocr()
+    except KeyboardInterrupt:
+        print("\n👋 Zakończono przez użytkownika")
+    except Exception as e:
+        print(f"❌ Błąd: {e}")
+
 if __name__ == "__main__":
-    test_gpu_performance()
+    main()
 EOF
 
-chmod +x ~/easyocr_gpu_test.py
+chmod +x ~/easyocr_gpu_final.py
 
+# Podsumowanie
 echo ""
 echo "🎉 INSTALACJA ZAKOŃCZONA!"
 echo ""
-echo "✅ PyTorch z GPU działa"
-echo "✅ EasyOCR z GPU działa"
+echo "✅ PyTorch z GPU: zainstalowany"
+echo "✅ torchvision: zbudowany ze źródeł"
+echo "✅ EasyOCR z GPU: zainstalowany"
 echo ""
-echo "🚀 UŻYCIE:"
-echo "python3 ~/easyocr_gpu_test.py"
+echo "🚀 TEST:"
+echo "python3 ~/easyocr_gpu_final.py"
 echo ""
-echo "📊 WYDAJNOŚĆ:"
-echo "- EasyOCR GPU: ~0.2-0.5s na obraz"
-echo "- Przyspieszenie: 4-6x vs CPU"
+echo "📊 INFO:"
+echo "• PyTorch version: $(python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'nie zainstalowany')"
+echo "• CUDA available: $(python3 -c 'import torch; print(torch.cuda.is_available())' 2>/dev/null || echo 'nie zainstalowany')"
 echo ""
 echo "🎯 GOTOWE!"
