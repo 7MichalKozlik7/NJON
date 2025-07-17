@@ -23,9 +23,32 @@ sudo nvpmodel -m 0
 sudo jetson_clocks
 
 # Krok 3: Instalacja PyTorch dla Jetson
-echo "🔥 Instalacja PyTorch z obsługą CUDA..."
-# PyTorch dla JetPack 6.x (CUDA 12.2)
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+echo "🔥 Instalacja PyTorch dla Jetson..."
+
+# Sprawdź JetPack version
+JETPACK_VERSION=$(dpkg -l | grep "nvidia-jetpack" | awk '{print $3}' | head -1)
+echo "JetPack version: $JETPACK_VERSION"
+
+# Instalacja PyTorch dla Jetson (oficjalne wheel)
+if python3 -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)"; then
+    echo "Instalacja PyTorch dla Jetson Orin Nano..."
+    
+    # Pobierz PyTorch wheel dla Jetson
+    wget https://developer.download.nvidia.com/compute/redist/jp/v512/pytorch/torch-2.0.0+nv23.05-cp38-cp38-linux_aarch64.whl -O /tmp/torch-jetson.whl 2>/dev/null || \
+    wget https://nvidia.box.com/shared/static/mp164asf3sceb570wvjsrezk1p4ftj8t.whl -O /tmp/torch-jetson.whl || {
+        echo "Nie można pobrać PyTorch dla Jetson, próba standardowej instalacji..."
+        pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+    }
+    
+    # Zainstaluj PyTorch wheel jeśli udało się pobrać
+    if [ -f /tmp/torch-jetson.whl ]; then
+        pip3 install /tmp/torch-jetson.whl
+        pip3 install torchvision
+    fi
+else
+    echo "Nieobsługiwana wersja Python"
+    exit 1
+fi
 
 # Sprawdzenie dostępności CUDA
 python3 -c "
@@ -95,10 +118,24 @@ import argparse
 import time
 
 class JetsonOCR:
-    def __init__(self, languages=['en', 'pl'], gpu=True):
-        """Inicjalizacja EasyOCR"""
+    def __init__(self, languages=['en'], gpu=True):
+        """Inicjalizacja EasyOCR z fallback na CPU"""
         print(f"Inicjalizacja EasyOCR z językami: {languages}")
-        self.reader = easyocr.Reader(languages, gpu=gpu)
+        
+        # Próbuj GPU mode, fallback na CPU
+        try:
+            if gpu:
+                print("Próba GPU mode...")
+                self.reader = easyocr.Reader(languages, gpu=True)
+                print("✅ GPU mode aktywny")
+            else:
+                raise Exception("GPU wyłączone przez użytkownika")
+        except Exception as e:
+            print(f"⚠️  GPU mode nie działa: {e}")
+            print("Fallback na CPU mode...")
+            self.reader = easyocr.Reader(languages, gpu=False)
+            print("✅ CPU mode aktywny")
+        
         print("EasyOCR gotowy!")
     
     def process_image(self, image_path, output_path=None):
@@ -246,9 +283,11 @@ echo "• Wyczyść tło i zwiększ kontrast przed OCR"
 echo "• Monitor wydajności: 'sudo tegrastats'"
 echo ""
 echo "🛠️ TROUBLESHOOTING:"
-echo "• Jeśli CUDA nie działa: sprawdź 'nvidia-smi'"
-echo "• Problemy z pamięcią: dodaj więcej swap"
+echo "• Jeśli CUDA nie działa: EasyOCR automatycznie przełączy się na CPU"
+echo "• Problemy z PyTorch: uruchom 'pip3 install torch --index-url https://download.pytorch.org/whl/cpu'"
+echo "• Problemy z pamięcią: dodaj więcej swap lub użyj mniejszych obrazków"
 echo "• Wolne działanie: sprawdź nvpmodel i jetson_clocks"
+echo "• CUDA errors: spróbuj CPU mode z flagą --cpu"
 
 # Test końcowy GPU
 echo ""
